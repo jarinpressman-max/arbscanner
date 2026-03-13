@@ -220,7 +220,12 @@ def get_sportsbook_prop_odds(player_name, stat_type, line, sport, team_hint=None
 
 def find_arbs(events):
     arbs = []
+    now = datetime.now(timezone.utc)
     for ev in events:
+        # Skip games already in progress
+        game_time = datetime.fromisoformat(ev["commence_time"].replace("Z", "+00:00"))
+        if game_time <= now:
+            continue
         markets = {}
         for bm in ev.get("bookmakers", []):
             for mkt in bm.get("markets", []):
