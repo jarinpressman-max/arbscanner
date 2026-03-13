@@ -140,14 +140,16 @@ with tab_game:
             with st.expander(label):
                 st.caption(f"{sport}")
 
-                stake = st.number_input(
-                    "Stake ($)",
-                    min_value=1.0,
-                    value=100.0,
-                    step=1.0,
-                    format="%.2f",
-                    key=f"game_stake_{i}",
+                _stake_str = st.text_input(
+                    "Stake ($)", value="100", key=f"game_stake_{i}"
                 )
+                try:
+                    stake = float(_stake_str)
+                    if stake <= 0:
+                        raise ValueError
+                except ValueError:
+                    st.error("Enter a valid stake amount (e.g. 100 or 500)")
+                    stake = 100.0
 
                 ocs = arb["ocs"]
                 oc_sum = arb["sum"]
