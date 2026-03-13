@@ -428,12 +428,17 @@ def get_prizepicks_projections():
     scraper_key = st.secrets.get("SCRAPERAPI_KEY", "")
     if scraper_key:
         try:
+            from urllib.parse import quote
+            # Embed the full target URL (with params) into ScraperAPI's url param
+            target = "https://api.prizepicks.com/projections?single_stat=true&per_page=500"
             proxy_url = (
-                f"http://api.scraperapi.com?api_key={scraper_key}"
-                f"&url={requests.utils.quote(PP_URL, safe='')}"
-                f"&keep_headers=true"
+                f"http://api.scraperapi.com"
+                f"?api_key={scraper_key}"
+                f"&url={quote(target)}"
+                f"&country_code=us"
             )
-            r = requests.get(proxy_url, params=PP_PARAMS, headers=HEADERS, timeout=30)
+            # Let ScraperAPI manage its own headers — don't pass ours
+            r = requests.get(proxy_url, timeout=60)
             last_status = r.status_code
             if r.status_code == 200:
                 raw = r.json()
