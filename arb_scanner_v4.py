@@ -427,23 +427,34 @@ def get_prizepicks_projections():
     # ── 1. Try ScraperAPI (residential proxy) if key is configured ────────────
     scraper_key = st.secrets.get("SCRAPERAPI_KEY", "")
     if scraper_key:
-        try:
-            from urllib.parse import quote
-            # Embed the full target URL (with params) into ScraperAPI's url param
-            target = "https://api.prizepicks.com/projections?single_stat=true&per_page=500"
-            proxy_url = (
-                f"http://api.scraperapi.com"
-                f"?api_key={scraper_key}"
-                f"&url={quote(target)}"
-                f"&country_code=us"
-            )
-            # Let ScraperAPI manage its own headers — don't pass ours
-            r = requests.get(proxy_url, timeout=60)
-            last_status = r.status_code
-            if r.status_code == 200:
-                raw = r.json()
-        except Exception:
-            pass  # fall through to direct attempt
+        from urllib.parse import quote
+        target = "https://api.prizepicks.com/projections?single_stat=true&per_page=500"
+
+        # Pass 1: standard residential proxy
+        # Pass 2: render=true — headless Chrome, bypasses Cloudflare JS challenge
+        for extra in ["", "&render=true"]:
+            try:
+                proxy_url = (
+                    f"http://api.scraperapi.com"
+                    f"?api_key={scraper_key}"
+                    f"&url={quote(target)}"
+                    f"{extra}"
+                )
+                r = requests.get(proxy_url, timeout=60)
+                last_status = r.status_code
+                if r.status_code == 200:
+                    try:
+                        raw = r.json()
+                    except Exception:
+                        # render=true wraps JSON in HTML — extract it
+                        import re, json as _json
+                        m = re.search(r'(\{[\s\S]+\})', r.text)
+                        if m:
+                            raw = _json.loads(m.group(1))
+                    if raw:
+                        break
+            except Exception:
+                continue
 
     # ── 2. Fall back to direct request (works locally, blocked on cloud) ──────
     if raw is None:
