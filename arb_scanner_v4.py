@@ -20,6 +20,7 @@ Optimizations:
 """
 
 import os
+import time
 import requests
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -45,6 +46,8 @@ EST = timezone(timedelta(hours=-5))
 
 _prop_cache = {}
 _events_cache = {}  # {sport: events_list} — reused within a session to save quota
+_api_cache = {}     # {(sport, markets): (fetch_time, data)} — 15-min TTL
+_CACHE_TTL = 900    # seconds (15 minutes)
 _print_lock = threading.Lock()
 
 PLATFORM_MULTIPLIERS = {
@@ -105,6 +108,15 @@ def divider(char="=", width=68):
 # ── API calls ──────────────────────────────────────────────────────────────
 
 def get_odds(sport, markets="h2h,spreads,totals", quiet=False):
+    cache_key = (sport, markets)
+    now = time.time()
+
+    # Return cached data if still fresh
+    if cache_key in _api_cache:
+        ts, cached_data = _api_cache[cache_key]
+        if now - ts < _CACHE_TTL:
+            return cached_data
+
     r = requests.get(
         f"{BASE_URL}/v4/sports/{sport}/odds/",
         params={
@@ -117,13 +129,16 @@ def get_odds(sport, markets="h2h,spreads,totals", quiet=False):
         timeout=15,
     )
     if r.status_code == 422:
+        _api_cache[cache_key] = (now, [])
         return []
     r.raise_for_status()
     if not quiet:
         remaining = r.headers.get("x-requests-remaining", "?")
         with _print_lock:
             print(f"  [{remaining} requests remaining]")
-    return r.json()
+    data = r.json()
+    _api_cache[cache_key] = (now, data)
+    return data
 
 def get_event_props(sport, event_id, market):
     cache_key = (sport, event_id, market)
