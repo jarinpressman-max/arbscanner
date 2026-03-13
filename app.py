@@ -10,11 +10,12 @@ import time
 import arb_scanner_v4 as _core
 
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 from datetime import datetime
 
 from arb_scanner_v4 import (
     to_payout, fmt_odds, time_until,
-    scan_all_sports, analyze_multileg_entry,
+    scan_all_sports, analyze_multileg_entry, find_ev_bets,
     PRIORITY_SPORTS, PLATFORM_MULTIPLIERS, PROP_MARKET_MAP, SPORT_MAP, EST,
 )
 
@@ -33,6 +34,43 @@ with st.sidebar:
     st.title("⚙️ Settings")
     min_margin = st.slider("Min margin %", 0.5, 5.0, 1.0, 0.5,
                            help="Higher = fewer but more reliable arbs")
+
+    st.divider()
+
+    # Kelly Criterion bankroll
+    st.markdown("**Kelly Criterion**")
+    bankroll = st.number_input(
+        "Bankroll ($)", min_value=0.0, value=0.0, step=100.0, format="%.2f",
+        help="Enter your bankroll to see Kelly-recommended stake sizes. Leave at 0 to skip."
+    )
+
+    st.divider()
+
+    # Auto-refresh
+    st.markdown("**Auto-Refresh**")
+    auto_refresh = st.toggle("Enable auto-refresh", value=False)
+    if auto_refresh:
+        refresh_mins = st.selectbox("Refresh every", [5, 10, 15, 30], index=2)
+        st_autorefresh(interval=refresh_mins * 60 * 1000, key="autorefresh")
+        st.caption(f"Refreshing every {refresh_mins} min")
+
+    st.divider()
+
+    # Bookmaker exclude filter
+    st.markdown("**Exclude Bookmakers**")
+    all_books = st.session_state.get("all_books", [])
+    if all_books:
+        excluded_books = st.multiselect(
+            "Hide arbs containing these books",
+            options=sorted(all_books),
+            default=[],
+        )
+    else:
+        excluded_books = []
+        st.caption("Run a scan to see available bookmakers")
+
+    st.divider()
+
     _sport_labels = {
         "basketball_nba":            "NBA",
         "icehockey_nhl":             "NHL",
@@ -54,21 +92,38 @@ st.title("📊 Arb Scanner")
 st.caption("Sportsbook arbs + PrizePicks / Underdog multi-leg prop arbs")
 st.divider()
 
-tab_game, tab_prop = st.tabs(["🏟️  Game Arbs", "🎯  Prop Arbs"])
+tab_game, tab_prop, tab_ev = st.tabs(["🏟️  Game Arbs", "🎯  Prop Arbs", "📈  EV+ Bets"])
+
+# ══════════════════════════════════════════════════════════════════════════
+# SHARED SCAN LOGIC  (runs once, results shared across tabs)
+# ══════════════════════════════════════════════════════════════════════════
+
+def _cache_seconds_remaining():
+    """Seconds until the oldest cached sport entry expires. 0 = stale/empty."""
+    if not _core._api_cache:
+        return 0
+    oldest_ts = min(ts for ts, _ in _core._api_cache.values())
+    return max(0, _core._CACHE_TTL - (time.time() - oldest_ts))
+
+
+def _collect_all_events():
+    """Pull every cached event list into a flat list (for EV+ scan)."""
+    events = []
+    seen_ids = set()
+    for _ts, data in _core._api_cache.values():
+        for ev in data:
+            eid = ev.get("id")
+            if eid not in seen_ids:
+                seen_ids.add(eid)
+                events.append(ev)
+    return events
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # GAME ARBS TAB
 # ══════════════════════════════════════════════════════════════════════════
 
 with tab_game:
-
-    # ── cache status helper ────────────────────────────────────────────────
-    def _cache_seconds_remaining():
-        """Seconds until the oldest cached sport entry expires. 0 = stale/empty."""
-        if not _core._api_cache:
-            return 0
-        oldest_ts = min(ts for ts, _ in _core._api_cache.values())
-        return max(0, _core._CACHE_TTL - (time.time() - oldest_ts))
 
     col_hdr, col_btn = st.columns([4, 1])
     with col_hdr:
@@ -104,8 +159,26 @@ with tab_game:
                 st.session_state.total_events = total_events
                 st.session_state.last_scan_time = datetime.now(EST).strftime("%I:%M:%S %p ET")
 
+                # Collect all books seen across arbs
+                books_seen = set()
+                for arb in all_arbs:
+                    for o in arb["ocs"].values():
+                        books_seen.add(o["book"])
+                st.session_state.all_books = list(books_seen)
+
+                # Run EV+ scan on cached events
+                all_events = _collect_all_events()
+                st.session_state.ev_bets = find_ev_bets(all_events, min_ev=2.0)
+
     arbs = st.session_state.get("game_arbs", [])
     total_events = st.session_state.get("total_events", 0)
+
+    # Apply bookmaker exclude filter
+    if excluded_books:
+        arbs = [
+            a for a in arbs
+            if not any(o["book"] in excluded_books for o in a["ocs"].values())
+        ]
 
     # Metrics row
     m1, m2, m3, m4 = st.columns(4)
@@ -140,8 +213,16 @@ with tab_game:
             with st.expander(label):
                 st.caption(f"{sport}")
 
+                # Kelly Criterion stake suggestion
+                if bankroll > 0:
+                    kelly_stake = bankroll * (margin / 100)
+                    st.caption(f"💡 Kelly stake: **${kelly_stake:.2f}** ({margin:.2f}% of ${bankroll:,.0f} bankroll)")
+                    default_stake = f"{kelly_stake:.2f}"
+                else:
+                    default_stake = "100"
+
                 _stake_str = st.text_input(
-                    "Stake ($)", value="100", key=f"game_stake_{i}"
+                    "Stake ($)", value=default_stake, key=f"game_stake_{i}"
                 )
                 try:
                     stake = float(_stake_str)
@@ -310,3 +391,75 @@ with tab_prop:
                     "No legs meet the minimum margin threshold. "
                     "Lower the min margin in the sidebar or choose different legs."
                 )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# EV+ BETS TAB
+# ══════════════════════════════════════════════════════════════════════════
+
+with tab_ev:
+    st.subheader("📈 EV+ Bets")
+    st.caption(
+        "Bets where one book's implied probability is **lower than the market consensus** — "
+        "meaning you're getting better-than-fair odds. Requires ≥3 books pricing the same outcome."
+    )
+    st.divider()
+
+    ev_bets = st.session_state.get("ev_bets", [])
+
+    if not ev_bets:
+        if "game_arbs" not in st.session_state:
+            st.info("Run a scan from the Game Arbs tab first to populate EV+ bets.")
+        else:
+            st.info("No EV+ bets found above 2% edge. Try lowering the min margin or scan again.")
+    else:
+        mk_labels = {"h2h": "Moneyline", "spreads": "Spread", "totals": "Total"}
+
+        e1, e2, e3 = st.columns(3)
+        e1.metric("EV+ bets found", len(ev_bets))
+        e2.metric("Best edge", f"{ev_bets[0]['ev_pct']:.2f}%")
+        e3.metric("Avg books compared", f"{sum(b['num_books'] for b in ev_bets) / len(ev_bets):.1f}")
+
+        st.divider()
+
+        for i, bet in enumerate(ev_bets, 1):
+            ev = bet["ev"]
+            ev_pct = bet["ev_pct"]
+            mk = mk_labels.get(bet["mk"], bet["mk"])
+            countdown = time_until(ev["commence_time"])
+            sport = ev["sport_key"].replace("_", " ").title()
+
+            if ev_pct >= 5.0:
+                badge = f"🟢 +{ev_pct:.2f}%"
+            elif ev_pct >= 3.0:
+                badge = f"🟡 +{ev_pct:.2f}%"
+            else:
+                badge = f"🔴 +{ev_pct:.2f}%"
+
+            label = (
+                f"#{i} · {ev['home_team']} vs {ev['away_team']}  ·  "
+                f"{bet['outcome']}  ·  {mk}  ·  {badge}  ·  starts in {countdown}"
+            )
+
+            with st.expander(label):
+                st.caption(sport)
+
+                ec1, ec2, ec3, ec4 = st.columns(4)
+                ec1.metric("Book", bet["book"])
+                ec2.metric("Odds", fmt_odds(bet["price"]))
+                ec3.metric("Edge", f"+{ev_pct:.2f}%")
+                ec4.metric("Books compared", bet["num_books"])
+
+                fair_odds_impl = bet["consensus"]
+                fair_american = int(round((100 / fair_odds_impl) - 100)) if fair_odds_impl < 0.5 else int(round(-100 * fair_odds_impl / (1 - fair_odds_impl)))
+                st.caption(
+                    f"Market consensus implied prob: **{fair_odds_impl*100:.1f}%**  ·  "
+                    f"This book's implied prob: **{bet['implied']*100:.1f}%**  ·  "
+                    f"Edge: **{ev_pct:.2f}%**"
+                )
+
+                # Kelly stake for EV+ bets
+                if bankroll > 0:
+                    kelly_frac = (ev_pct / 100)
+                    kelly_stake_ev = bankroll * kelly_frac
+                    st.caption(f"💡 Kelly stake: **${kelly_stake_ev:.2f}** ({ev_pct:.2f}% of ${bankroll:,.0f} bankroll)")
