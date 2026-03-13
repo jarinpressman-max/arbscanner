@@ -16,9 +16,7 @@ from datetime import datetime
 from arb_scanner_v4 import (
     to_payout, fmt_odds, time_until,
     scan_all_sports, analyze_multileg_entry, find_ev_bets,
-    get_prizepicks_projections, find_prizepicks_ev,
-    PRIORITY_SPORTS, PLATFORM_MULTIPLIERS, PROP_MARKET_MAP, SPORT_MAP,
-    PRIZEPICKS_LEAGUE_SPORT, EST,
+    PRIORITY_SPORTS, PLATFORM_MULTIPLIERS, PROP_MARKET_MAP, SPORT_MAP, EST,
 )
 
 # ── page config ────────────────────────────────────────────────────────────
@@ -94,7 +92,7 @@ st.title("📊 Arb Scanner")
 st.caption("Sportsbook arbs + PrizePicks / Underdog multi-leg prop arbs")
 st.divider()
 
-tab_game, tab_prop, tab_ev, tab_pp = st.tabs(["🏟️  Game Arbs", "🎯  Prop Arbs", "📈  EV+ Bets", "🏆  PrizePicks"])
+tab_game, tab_prop, tab_ev = st.tabs(["🏟️  Game Arbs", "🎯  Prop Arbs", "📈  EV+ Bets"])
 
 # ══════════════════════════════════════════════════════════════════════════
 # SHARED SCAN LOGIC  (runs once, results shared across tabs)
@@ -395,6 +393,54 @@ with tab_prop:
                     "Lower the min margin in the sidebar or choose different legs."
                 )
 
+            # ── EV+ per-leg analysis ──────────────────────────────────────────────
+            st.divider()
+            st.markdown("**📈 EV+ Analysis — Is each pick +EV on PrizePicks?**")
+            st.caption(
+                "A pick is **+EV** when sportsbooks imply >50% probability it hits. "
+                "Since PrizePicks pays ~even money per leg, any edge above 50% means "
+                "you're getting better-than-fair value."
+            )
+
+            ev_rows = []
+            for leg in leg_results:
+                sb_impl_hedge = leg.get("sb_implied")
+                if sb_impl_hedge is None:
+                    ev_rows.append({
+                        "Player":      leg["player"],
+                        "Stat":        leg["stat"],
+                        "Pick":        f"{leg['direction']} {leg['line']}",
+                        "SB Implied":  "—",
+                        "Edge":        "—",
+                        "Rating":      "⚪ No data",
+                    })
+                    continue
+
+                # sb_implied = hedge direction implied prob (opposite of pick)
+                # pick_implied ≈ complement of that
+                pick_implied = 1.0 - sb_impl_hedge
+                edge = (pick_implied - 0.50) * 100
+
+                if edge >= 5:
+                    rating = f"🟢 +{edge:.1f}%  Strong"
+                elif edge >= 2:
+                    rating = f"🟡 +{edge:.1f}%  Marginal"
+                elif edge >= 0:
+                    rating = f"🔵 +{edge:.1f}%  Slight"
+                else:
+                    rating = f"🔴 {edge:.1f}%  Avoid"
+
+                ev_rows.append({
+                    "Player":      leg["player"],
+                    "Stat":        leg["stat"],
+                    "Pick":        f"{leg['direction']} {leg['line']}",
+                    "SB Implied":  f"{pick_implied*100:.1f}%",
+                    "Edge":        f"{edge:+.1f}%",
+                    "Rating":      rating,
+                })
+
+            st.dataframe(ev_rows, use_container_width=True, hide_index=True)
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # EV+ BETS TAB
@@ -466,143 +512,3 @@ with tab_ev:
                     kelly_frac = (ev_pct / 100)
                     kelly_stake_ev = bankroll * kelly_frac
                     st.caption(f"💡 Kelly stake: **${kelly_stake_ev:.2f}** ({ev_pct:.2f}% of ${bankroll:,.0f} bankroll)")
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# PRIZEPICKS TAB
-# ══════════════════════════════════════════════════════════════════════════
-
-with tab_pp:
-    st.subheader("🏆 PrizePicks EV+ Picks")
-    st.caption(
-        "Fetches live PrizePicks lines (free — no API key needed) then compares them "
-        "against sportsbook consensus odds. A pick is **+EV** when sportsbooks imply "
-        ">50% probability for that outcome, meaning you're getting better-than-fair "
-        "value on PrizePicks."
-    )
-    st.divider()
-
-    pp_hdr, pp_btn_col = st.columns([4, 1])
-    with pp_btn_col:
-        fetch_pp_btn = st.button("⬇ Fetch Lines", type="primary", use_container_width=True)
-
-    if fetch_pp_btn:
-        with st.spinner("Fetching PrizePicks projections…"):
-            projs, pp_err = get_prizepicks_projections()
-            st.session_state.pp_projections = projs
-            st.session_state.pp_error = pp_err
-
-    projs  = st.session_state.get("pp_projections", None)
-    pp_err = st.session_state.get("pp_error", None)
-
-    if projs is None:
-        st.info("Click **Fetch Lines** to load current PrizePicks projections.")
-    elif not projs:
-        st.error(pp_err or "Could not fetch PrizePicks projections — their API may be temporarily unavailable or blocking automated requests. Try again in a few minutes.")
-    else:
-        # ── Filters ──────────────────────────────────────────────────────
-        fc1, fc2 = st.columns(2)
-        leagues  = sorted(set(p["league"] for p in projs if p["league"]))
-        stats    = sorted(set(p["stat_type"] for p in projs if p["stat_type"]))
-
-        with fc1:
-            sel_league = st.selectbox("League", ["All"] + leagues, key="pp_league")
-        with fc2:
-            sel_stat = st.selectbox("Stat type", ["All"] + stats, key="pp_stat")
-
-        filtered = projs
-        if sel_league != "All":
-            filtered = [p for p in filtered if p["league"] == sel_league]
-        if sel_stat != "All":
-            filtered = [p for p in filtered if p["stat_type"] == sel_stat]
-
-        st.caption(f"Showing {len(filtered)} of {len(projs)} projections")
-
-        # ── Projections table ─────────────────────────────────────────────
-        if filtered:
-            st.dataframe(
-                [
-                    {
-                        "Player":  p["player"],
-                        "Team":    p["team"],
-                        "League":  p["league"],
-                        "Stat":    p["stat_type"],
-                        "PP Line": p["line"],
-                    }
-                    for p in filtered[:100]
-                ],
-                use_container_width=True,
-                hide_index=True,
-            )
-
-        st.divider()
-
-        # ── EV+ finder ───────────────────────────────────────────────────
-        st.markdown("**Find EV+ Picks**")
-        st.caption(
-            "⚠️ Uses Odds API credits to look up sportsbook player prop odds. "
-            "Results are cached — repeated clicks within 15 min are free."
-        )
-
-        ev_c1, ev_c2 = st.columns([3, 1])
-        with ev_c1:
-            min_pp_edge = st.slider("Min edge %", 1.0, 15.0, 3.0, 0.5, key="pp_min_edge")
-        with ev_c2:
-            find_ev_pp_btn = st.button("🔍 Find EV+", key="pp_ev_btn", use_container_width=True)
-
-        if find_ev_pp_btn:
-            supported = [p for p in filtered if p["league"] in PRIZEPICKS_LEAGUE_SPORT]
-            if not supported:
-                st.warning(
-                    "No supported league found in current filter. "
-                    "Supported leagues: NBA, NFL, MLB, NHL."
-                )
-            else:
-                with st.spinner(
-                    f"Comparing {len(supported)} props against sportsbook odds…"
-                ):
-                    ev_picks = find_prizepicks_ev(supported, min_edge=min_pp_edge)
-                    st.session_state.pp_ev_picks = ev_picks
-
-        ev_picks = st.session_state.get("pp_ev_picks", [])
-
-        if ev_picks:
-            st.divider()
-            ep1, ep2 = st.columns(2)
-            ep1.metric("EV+ picks found", len(ev_picks))
-            ep2.metric("Best edge", f"+{ev_picks[0]['edge']:.1f}%")
-            st.divider()
-
-            for i, pick in enumerate(ev_picks, 1):
-                edge = pick["edge"]
-                if edge >= 8:
-                    badge = f"🟢 +{edge:.1f}%"
-                elif edge >= 5:
-                    badge = f"🟡 +{edge:.1f}%"
-                else:
-                    badge = f"🔴 +{edge:.1f}%"
-
-                label = (
-                    f"#{i} · {pick['player']}  ·  "
-                    f"{pick['stat_type']} **{pick['direction']}** {pick['line']}  ·  "
-                    f"{badge}  ·  {pick['league']}"
-                )
-
-                with st.expander(label):
-                    pc1, pc2, pc3, pc4 = st.columns(4)
-                    pc1.metric("PP Line",    pick["line"])
-                    pc2.metric("Pick",       pick["direction"])
-                    pc3.metric("Best SB Odds", fmt_odds(pick["sb_price"]))
-                    pc4.metric("SB Book",    pick["sb_book"])
-
-                    st.caption(
-                        f"Sportsbook implied prob: **{pick['sb_implied']*100:.1f}%** "
-                        f"vs PrizePicks break-even (~50%) → Edge: **+{edge:.1f}%**"
-                    )
-
-                    if bankroll > 0:
-                        kelly_pp = bankroll * (edge / 100)
-                        st.caption(
-                            f"💡 Kelly stake: **${kelly_pp:.2f}** "
-                            f"({edge:.1f}% of ${bankroll:,.0f} bankroll)"
-                        )
