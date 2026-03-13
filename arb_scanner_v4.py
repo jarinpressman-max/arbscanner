@@ -365,6 +365,149 @@ def find_ev_bets(events, min_ev=2.0):
     return sorted(bets, key=lambda b: b["ev_pct"], reverse=True)
 
 
+# ── PrizePicks integration ─────────────────────────────────────────────────
+
+PRIZEPICKS_STAT_MAP = {
+    "points":             "points",
+    "rebounds":           "rebounds",
+    "assists":            "assists",
+    "3-pt made":          "threes",
+    "pitcher strikeouts": "strikeouts",
+    "hitter strikeouts":  "strikeouts",
+    "strikeouts":         "strikeouts",
+    "hits":               "hits",
+    "goals":              "goals",
+    "saves":              "saves",
+    "shots on target":    "shots",
+}
+
+PRIZEPICKS_LEAGUE_SPORT = {
+    "NBA": "basketball_nba",
+    "NFL": "americanfootball_nfl",
+    "MLB": "baseball_mlb",
+    "NHL": "icehockey_nhl",
+}
+
+_pp_cache = {}
+_PP_TTL   = 600  # 10-minute cache
+
+
+def get_prizepicks_projections():
+    """
+    Fetch live PrizePicks projections from their public (unofficial) endpoint.
+    No API key required. Cached for 10 minutes.
+    """
+    now = time.time()
+    if "all" in _pp_cache:
+        ts, data = _pp_cache["all"]
+        if now - ts < _PP_TTL:
+            return data
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/json",
+        "Referer": "https://app.prizepicks.com/",
+        "Origin":  "https://app.prizepicks.com",
+    }
+    try:
+        r = requests.get(
+            "https://api.prizepicks.com/projections",
+            params={"single_stat": "true", "per_page": 500},
+            headers=headers,
+            timeout=10,
+        )
+        if r.status_code == 403:
+            return []
+        r.raise_for_status()
+        raw = r.json()
+    except Exception:
+        return []
+
+    # Build player ID → attributes lookup from the "included" array
+    players = {}
+    for item in raw.get("included", []):
+        if item.get("type") in ("new_player", "player"):
+            players[str(item["id"])] = item.get("attributes", {})
+
+    projections = []
+    for item in raw.get("data", []):
+        if item.get("type") != "projection":
+            continue
+        attrs = item.get("attributes", {})
+        if attrs.get("status") not in ("pre_game", "pre-game", None):
+            continue
+        if attrs.get("is_promo", False):
+            continue
+
+        rels      = item.get("relationships", {})
+        player_id = (
+            rels.get("new_player", {}).get("data", {}).get("id")
+            or rels.get("player", {}).get("data", {}).get("id")
+        )
+        pinfo = players.get(str(player_id) if player_id else "", {})
+
+        league      = str(pinfo.get("league") or pinfo.get("league_name") or attrs.get("league", "")).upper()
+        player_name = pinfo.get("name") or attrs.get("description", "")
+        team        = pinfo.get("team_name") or pinfo.get("team", "")
+
+        projections.append({
+            "id":         item["id"],
+            "player":     player_name,
+            "team":       team,
+            "league":     league,
+            "stat_type":  attrs.get("stat_type", ""),
+            "line":       float(attrs.get("line_score") or 0),
+            "start_time": attrs.get("start_time", ""),
+        })
+
+    _pp_cache["all"] = (now, projections)
+    return projections
+
+
+def find_prizepicks_ev(projections, min_edge=3.0):
+    """
+    Compare PrizePicks lines against sportsbook odds.
+    Edge = (sportsbook implied probability − 0.50) × 100.
+    A positive edge means books think that outcome hits more often than 50/50,
+    making PrizePicks even-money-equivalent a favorable bet.
+    Uses Odds API credits via get_sportsbook_prop_odds (cached).
+    """
+    results = []
+    for proj in projections:
+        sport    = PRIZEPICKS_LEAGUE_SPORT.get(proj["league"])
+        stat_key = PRIZEPICKS_STAT_MAP.get(proj["stat_type"].lower())
+        if not sport or not stat_key:
+            continue
+
+        best_over, best_under = get_sportsbook_prop_odds(
+            proj["player"],
+            stat_key,
+            proj["line"],
+            sport,
+            team_hint=proj.get("team") or None,
+        )
+
+        for direction, odds_data in [("Over", best_over), ("Under", best_under)]:
+            if not odds_data:
+                continue
+            sb_impl = to_implied(odds_data["price"])
+            edge    = (sb_impl - 0.50) * 100
+            if edge >= min_edge:
+                results.append({
+                    **proj,
+                    "direction":  direction,
+                    "sb_book":    odds_data["book"],
+                    "sb_price":   odds_data["price"],
+                    "sb_implied": sb_impl,
+                    "edge":       edge,
+                })
+
+    return sorted(results, key=lambda r: r["edge"], reverse=True)
+
+
 def scan_sport(sport):
     try:
         events = get_odds(sport)
