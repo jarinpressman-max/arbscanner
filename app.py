@@ -6,6 +6,7 @@ Wraps arb_scanner_v4 core logic in a shareable browser UI.
 
 import sys
 import os
+import time
 import arb_scanner_v4 as _core
 
 import streamlit as st
@@ -61,26 +62,47 @@ tab_game, tab_prop = st.tabs(["🏟️  Game Arbs", "🎯  Prop Arbs"])
 
 with tab_game:
 
+    # ── cache status helper ────────────────────────────────────────────────
+    def _cache_seconds_remaining():
+        """Seconds until the oldest cached sport entry expires. 0 = stale/empty."""
+        if not _core._api_cache:
+            return 0
+        oldest_ts = min(ts for ts, _ in _core._api_cache.values())
+        return max(0, _core._CACHE_TTL - (time.time() - oldest_ts))
+
     col_hdr, col_btn = st.columns([4, 1])
     with col_hdr:
         if "last_scan_time" in st.session_state:
-            st.caption(f"Last scanned: {st.session_state.last_scan_time}")
+            secs_left = _cache_seconds_remaining()
+            if secs_left > 0:
+                mins, secs = divmod(int(secs_left), 60)
+                st.caption(
+                    f"Last scanned: {st.session_state.last_scan_time}  ·  "
+                    f"⚡ Cached — next free scan in {mins}m {secs:02d}s"
+                )
+            else:
+                st.caption(f"Last scanned: {st.session_state.last_scan_time}  ·  ✅ Cache expired — ready for fresh scan")
     with col_btn:
         scan_btn = st.button("🔍  Scan Now", type="primary", use_container_width=True)
 
     # Run scan on first load or button press
     if scan_btn or "game_arbs" not in st.session_state:
-        with st.spinner("Scanning all sports in parallel…"):
-            orig = _core.MIN_MARGIN
-            _core.MIN_MARGIN = min_margin
-            _core._events_cache.clear()
-            all_arbs, total_events = scan_all_sports(PRIORITY_SPORTS)
-            _core.MIN_MARGIN = orig
+        secs_left = _cache_seconds_remaining()
+        if secs_left > 0 and "game_arbs" in st.session_state:
+            # Still within cache window — reuse existing results, no API call
+            pass
+        else:
+            with st.spinner("Scanning all sports in parallel…"):
+                orig = _core.MIN_MARGIN
+                _core.MIN_MARGIN = min_margin
+                _core._events_cache.clear()
+                all_arbs, total_events = scan_all_sports(PRIORITY_SPORTS)
+                _core.MIN_MARGIN = orig
 
-            all_arbs.sort(key=lambda a: a["margin"], reverse=True)
-            st.session_state.game_arbs = all_arbs
-            st.session_state.total_events = total_events
-            st.session_state.last_scan_time = datetime.now(EST).strftime("%I:%M:%S %p ET")
+                all_arbs.sort(key=lambda a: a["margin"], reverse=True)
+                st.session_state.game_arbs = all_arbs
+                st.session_state.total_events = total_events
+                st.session_state.last_scan_time = datetime.now(EST).strftime("%I:%M:%S %p ET")
 
     arbs = st.session_state.get("game_arbs", [])
     total_events = st.session_state.get("total_events", 0)
