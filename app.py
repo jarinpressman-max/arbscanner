@@ -159,11 +159,12 @@ with tab_game:
                 st.session_state.total_events = total_events
                 st.session_state.last_scan_time = datetime.now(EST).strftime("%I:%M:%S %p ET")
 
-                # Collect all books seen across arbs
+                # Collect all books seen across all cached events
                 books_seen = set()
-                for arb in all_arbs:
-                    for o in arb["ocs"].values():
-                        books_seen.add(o["book"])
+                for _ts, data in _core._api_cache.values():
+                    for ev in data:
+                        for bm in ev.get("bookmakers", []):
+                            books_seen.add(bm["title"])
                 st.session_state.all_books = list(books_seen)
 
                 # Run EV+ scan on cached events
