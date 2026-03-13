@@ -31,7 +31,7 @@ st.set_page_config(
 
 with st.sidebar:
     st.title("⚙️ Settings")
-    min_margin = st.slider("Min margin %", 1.0, 5.0, 2.0, 0.5,
+    min_margin = st.slider("Min margin %", 0.5, 5.0, 1.0, 0.5,
                            help="Higher = fewer but more reliable arbs")
     _sport_labels = {
         "basketball_nba":            "NBA",
@@ -144,7 +144,8 @@ with tab_game:
                     "Stake ($)",
                     min_value=1.0,
                     value=100.0,
-                    step=10.0,
+                    step=1.0,
+                    format="%.2f",
                     key=f"game_stake_{i}",
                 )
 
@@ -189,7 +190,7 @@ with tab_prop:
         num_legs = st.selectbox("Legs", list(multipliers.keys()))
         multiplier = multipliers[num_legs]
     with p3:
-        total_stake = st.number_input("Entry stake ($)", min_value=1.0, value=25.0, step=5.0)
+        total_stake = st.number_input("Entry stake ($)", min_value=1.0, value=25.0, step=1.0, format="%.2f")
 
     st.caption(
         f"{num_legs}-leg entry pays **{multiplier}x** → **${total_stake * multiplier:.2f}** if all legs hit"
