@@ -488,18 +488,17 @@ with tab_pp:
 
     if fetch_pp_btn:
         with st.spinner("Fetching PrizePicks projections…"):
-            projs = get_prizepicks_projections()
+            projs, pp_err = get_prizepicks_projections()
             st.session_state.pp_projections = projs
+            st.session_state.pp_error = pp_err
 
-    projs = st.session_state.get("pp_projections", None)
+    projs  = st.session_state.get("pp_projections", None)
+    pp_err = st.session_state.get("pp_error", None)
 
     if projs is None:
         st.info("Click **Fetch Lines** to load current PrizePicks projections.")
     elif not projs:
-        st.error(
-            "Could not fetch PrizePicks projections — their API may be temporarily "
-            "unavailable or blocking automated requests. Try again in a few minutes."
-        )
+        st.error(pp_err or "Could not fetch PrizePicks projections — their API may be temporarily unavailable or blocking automated requests. Try again in a few minutes.")
     else:
         # ── Filters ──────────────────────────────────────────────────────
         fc1, fc2 = st.columns(2)
