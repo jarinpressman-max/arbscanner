@@ -308,6 +308,63 @@ def find_arbs(events):
 
     return arbs
 
+def find_ev_bets(events, min_ev=2.0):
+    """Find +EV bets where one book's odds beat the market consensus."""
+    bets = []
+    now = datetime.now(timezone.utc)
+    events_seen = set()
+
+    for ev in events:
+        if ev.get("id") in events_seen:
+            continue
+        events_seen.add(ev.get("id"))
+
+        game_time = datetime.fromisoformat(ev["commence_time"].replace("Z", "+00:00"))
+        if game_time <= now:
+            continue
+
+        for mkt_key in ["h2h", "spreads", "totals"]:
+            by_outcome = {}
+            for bm in ev.get("bookmakers", []):
+                for mkt in bm.get("markets", []):
+                    if mkt["key"] != mkt_key:
+                        continue
+                    for oc in mkt["outcomes"]:
+                        if mkt_key == "totals":
+                            key = f"{oc['name']} {oc.get('point', '')}"
+                        elif mkt_key == "spreads":
+                            key = f"{oc['name']}|{oc.get('point', '')}"
+                        else:
+                            key = oc["name"]
+                        by_outcome.setdefault(key, []).append({
+                            "book": bm["title"],
+                            "price": oc["price"],
+                            "implied": to_implied(oc["price"]),
+                        })
+
+            for outcome_key, prices in by_outcome.items():
+                if len(prices) < 3:
+                    continue
+                consensus = sum(p["implied"] for p in prices) / len(prices)
+                best = min(prices, key=lambda p: p["implied"])
+                ev_pct = (consensus - best["implied"]) / consensus * 100
+                if ev_pct >= min_ev:
+                    display = outcome_key.split("|")[0] if "|" in outcome_key else outcome_key
+                    bets.append({
+                        "ev": ev,
+                        "mk": mkt_key,
+                        "outcome": display,
+                        "book": best["book"],
+                        "price": best["price"],
+                        "implied": best["implied"],
+                        "consensus": consensus,
+                        "ev_pct": ev_pct,
+                        "num_books": len(prices),
+                    })
+
+    return sorted(bets, key=lambda b: b["ev_pct"], reverse=True)
+
+
 def scan_sport(sport):
     try:
         events = get_odds(sport)
