@@ -19,12 +19,13 @@ Optimizations:
 - Implied probs stored at detection time
 """
 
+import os
 import requests
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 
-API_KEY = "fdd9b533e7f9c95c6b57572c7778af22"
+API_KEY = os.environ.get("ODDS_API_KEY", "")
 MIN_MARGIN = 2.0
 
 PRIORITY_SPORTS = [
