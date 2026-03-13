@@ -396,35 +396,75 @@ def get_prizepicks_projections():
     """
     Fetch live PrizePicks projections from their public (unofficial) endpoint.
     No API key required. Cached for 10 minutes.
+    Routes through ScraperAPI (residential proxy) when SCRAPERAPI_KEY is set
+    in Streamlit secrets, bypassing PrizePicks' cloud-IP block.
+    Returns (projections_list, error_str_or_None).
     """
+    import streamlit as st
+
     now = time.time()
     if "all" in _pp_cache:
-        ts, data = _pp_cache["all"]
+        ts, data, err = _pp_cache["all"]
         if now - ts < _PP_TTL:
-            return data
+            return data, err
 
-    headers = {
+    PP_URL = "https://api.prizepicks.com/projections"
+    PP_PARAMS = {"single_stat": "true", "per_page": 500}
+    HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         ),
-        "Accept": "application/json",
-        "Referer": "https://app.prizepicks.com/",
-        "Origin":  "https://app.prizepicks.com",
+        "Accept":          "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer":         "https://app.prizepicks.com/",
+        "Origin":          "https://app.prizepicks.com",
     }
-    try:
-        r = requests.get(
-            "https://api.prizepicks.com/projections",
-            params={"single_stat": "true", "per_page": 500},
-            headers=headers,
-            timeout=10,
-        )
-        if r.status_code == 403:
-            return []
-        r.raise_for_status()
-        raw = r.json()
-    except Exception:
-        return []
+
+    raw = None
+    last_status = None
+
+    # ── 1. Try ScraperAPI (residential proxy) if key is configured ────────────
+    scraper_key = st.secrets.get("SCRAPERAPI_KEY", "")
+    if scraper_key:
+        try:
+            proxy_url = (
+                f"http://api.scraperapi.com?api_key={scraper_key}"
+                f"&url={requests.utils.quote(PP_URL, safe='')}"
+                f"&keep_headers=true"
+            )
+            r = requests.get(proxy_url, params=PP_PARAMS, headers=HEADERS, timeout=30)
+            last_status = r.status_code
+            if r.status_code == 200:
+                raw = r.json()
+        except Exception:
+            pass  # fall through to direct attempt
+
+    # ── 2. Fall back to direct request (works locally, blocked on cloud) ──────
+    if raw is None:
+        try:
+            r = requests.get(PP_URL, params=PP_PARAMS, headers=HEADERS, timeout=10)
+            last_status = r.status_code
+            if r.status_code == 200:
+                raw = r.json()
+        except Exception:
+            pass
+
+    if raw is None:
+        if scraper_key:
+            err = (
+                f"PrizePicks API returned HTTP {last_status} even via proxy. "
+                "Try again in a few minutes."
+            )
+        else:
+            err = (
+                f"PrizePicks API returned HTTP {last_status}. "
+                "Their service blocks requests from cloud server IPs. "
+                "Add a free SCRAPERAPI_KEY to your Streamlit secrets to fix this — "
+                "sign up free at scraperapi.com (1,000 calls/month free tier)."
+            )
+        _pp_cache["all"] = (now, [], err)
+        return [], err
 
     # Build player ID → attributes lookup from the "included" array
     players = {}
@@ -463,8 +503,8 @@ def get_prizepicks_projections():
             "start_time": attrs.get("start_time", ""),
         })
 
-    _pp_cache["all"] = (now, projections)
-    return projections
+    _pp_cache["all"] = (now, projections, None)
+    return projections, None
 
 
 def find_prizepicks_ev(projections, min_edge=3.0):
