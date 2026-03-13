@@ -32,10 +32,20 @@ with st.sidebar:
     st.title("⚙️ Settings")
     min_margin = st.slider("Min margin %", 1.0, 5.0, 2.0, 0.5,
                            help="Higher = fewer but more reliable arbs")
+    _sport_labels = {
+        "basketball_nba":            "NBA",
+        "icehockey_nhl":             "NHL",
+        "baseball_mlb":              "MLB",
+        "soccer_epl":                "EPL",
+        "soccer_usa_mls":            "MLS",
+        "soccer_uefa_champs_league": "UEFA Champions League",
+        "mma_mixed_martial_arts":    "MMA",
+        "basketball_ncaab":          "NCAAB",
+        "americanfootball_nfl":      "NFL",
+    }
     st.caption("Sports scanned:")
     for s in PRIORITY_SPORTS:
-        parts = s.split("_")
-        st.caption(f"  · {parts[-1].upper()}")
+        st.caption(f"  · {_sport_labels.get(s, s.replace('_', ' ').title())}")
 
 # ── header ─────────────────────────────────────────────────────────────────
 
